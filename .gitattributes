@@ -1,0 +1,77 @@
+# All text files use LF line endings, on every platform including Windows
+* text=auto eol=lf
+
+# Binary files
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.webp      binary
+*.bmp       binary
+*.tif       binary
+*.tiff      binary
+*.ico       binary
+*.pdf       binary
+*.psd       binary
+
+*.mp3       binary
+*.wav       binary
+*.flac      binary
+*.ogg       binary
+*.m4a       binary
+*.aac       binary
+
+*.mp4       binary
+*.mov       binary
+*.avi       binary
+*.mkv       binary
+*.webm      binary
+
+*.zip       binary
+*.tar       binary
+*.tar.gz    binary
+*.tgz       binary
+*.tar.bz2   binary
+*.tar.xz    binary
+*.gz        binary
+*.bz2       binary
+*.xz        binary
+*.7z        binary
+*.rar       binary
+
+*.bin       binary
+*.dat       binary
+*.npy       binary
+*.npz       binary
+*.pkl       binary
+*.pickle    binary
+*.pt        binary
+*.pth       binary
+*.ckpt      binary
+*.safetensors binary
+*.onnx      binary
+*.gguf      binary
+*.h5        binary
+*.hdf5      binary
+*.tflite    binary
+*.pb        binary
+*.msgpack   binary
+*.parquet   binary
+*.arrow     binary
+*.feather   binary
+
+*.so        binary
+*.dylib     binary
+*.dll       binary
+*.exe       binary
+*.o         binary
+*.a         binary
+*.lib       binary
+*.class     binary
+*.jar       binary
+
+*.ttf       binary
+*.otf       binary
+*.woff      binary
+*.woff2     binary
+*.eot       binary
