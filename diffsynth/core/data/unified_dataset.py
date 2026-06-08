@@ -1,5 +1,6 @@
 from .operators import *
 import torch, json, pandas
+from diffsynth.utils.logger import logger
 
 
 class UnifiedDataset(torch.utils.data.Dataset):
@@ -12,6 +13,7 @@ class UnifiedDataset(torch.utils.data.Dataset):
         special_operator_map=None,
         max_data_items=None,
     ):
+        logger.info(f"Initializing UnifiedDataset")
         self.base_path = base_path
         self.metadata_path = metadata_path
         self.repeat = repeat
@@ -23,7 +25,9 @@ class UnifiedDataset(torch.utils.data.Dataset):
         self.data = []
         self.cached_data = []
         self.load_from_cache = metadata_path is None
+        logger.info(f"Start loading metadata from {metadata_path}")
         self.load_metadata(metadata_path)
+        logger.info(f"Finished loading metadata. {len(self.data) = } data items loaded.")
     
     @staticmethod
     def default_image_operator(
@@ -69,9 +73,9 @@ class UnifiedDataset(torch.utils.data.Dataset):
     
     def load_metadata(self, metadata_path):
         if metadata_path is None:
-            print("No metadata_path. Searching for cached data files.")
+            logger.info("No metadata_path. Searching for cached data files.")
             self.search_for_cached_data_files(self.base_path)
-            print(f"{len(self.cached_data)} cached data files found.")
+            logger.info(f"{len(self.cached_data)} cached data files found.")
         elif metadata_path.endswith(".json"):
             with open(metadata_path, "r") as f:
                 metadata = json.load(f)

@@ -40,9 +40,30 @@ def add_training_config(parser: argparse.ArgumentParser):
     return parser
 
 def add_output_config(parser: argparse.ArgumentParser):
-    parser.add_argument("--output_path", type=str, default="./models", help="Output save path.")
-    parser.add_argument("--remove_prefix_in_ckpt", type=str, default="pipe.dit.", help="Remove prefix in ckpt.")
-    parser.add_argument("--save_steps", type=int, default=None, help="Number of checkpoint saving invervals. If None, checkpoints will be saved every epoch.")
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default="./models",
+        help="Output save path.",
+    )
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        default=None,
+        help="Directory to save training logs.",
+    )
+    parser.add_argument(
+        "--remove_prefix_in_ckpt",
+        type=str,
+        default="pipe.dit.",
+        help="Remove prefix in ckpt.",
+    )
+    parser.add_argument(
+        "--save_steps",
+        type=int,
+        default=None,
+        help="Number of checkpoint saving invervals. If None, checkpoints will be saved every epoch.",
+    )
     return parser
 
 def add_lora_config(parser: argparse.ArgumentParser):

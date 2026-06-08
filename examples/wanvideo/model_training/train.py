@@ -1,9 +1,79 @@
 import torch, os, argparse, accelerate, warnings
+from pathlib import Path
+
 from diffsynth.core import UnifiedDataset
 from diffsynth.core.data.operators import LoadVideo, LoadAudio, ImageCropAndResize, ToAbsolutePath
 from diffsynth.pipelines.wan_video import WanVideoPipeline, ModelConfig
 from diffsynth.diffusion import *
+from diffsynth.utils.logger import _configure_logging, logger, log_environment_versions
+from diffsynth.utils.misc import parse_non_negative_integer_from_environment
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+WAN_INFERENCE_NEGATIVE_PROMPT = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+
+
+def machine_index_from_environment() -> int:
+    for environment_variable in (
+        "GROUP_RANK",
+        "NODE_RANK",
+        "MACHINE_RANK",
+    ):
+        if os.environ.get(environment_variable) not in (None, ""):
+            return parse_non_negative_integer_from_environment(
+                environment_variable,
+                "0",
+            )
+    return 0
+
+
+def build_inference_dataset_from_training_prompts(
+    dataset: UnifiedDataset,
+    args: argparse.Namespace,
+    num_prompts: int = 3,
+) -> list[dict[str, object]]:
+    inference_dataset: list[dict[str, object]] = []
+    for data in dataset.data[:num_prompts]:
+        inference_dataset.append(
+            {
+                "prompt": data["prompt"],
+                "negative_prompt": WAN_INFERENCE_NEGATIVE_PROMPT,
+                "seed": 0,
+                "tiled": True,
+                "height": args.height,
+                "width": args.width,
+                "num_frames": args.num_frames,
+                "num_inference_steps": 50,
+            }
+        )
+    return inference_dataset
+
+
+def log_accelerator_debug(
+    accelerator: accelerate.Accelerator,
+) -> None:
+    logger.info(
+        f"""Accelerator debug: 
+    {accelerator.process_index = }
+    {accelerator.local_process_index = }
+    {accelerator.num_processes = }
+    {accelerator.distributed_type = }
+    {accelerator.is_main_process = }
+    {accelerator.is_local_main_process = }
+"""
+    )
+
+    for name in [
+        "MASTER_ADDR",
+        "MASTER_PORT",
+        "RANK",
+        "WORLD_SIZE",
+        "LOCAL_RANK",
+        "LOCAL_WORLD_SIZE",
+        "NODE_RANK",
+        "GROUP_RANK",
+    ]:
+        logger.info(f"env {name}={os.environ.get(name)}")
 
 
 class WanTrainingModule(DiffusionTrainingModule):
@@ -24,6 +94,7 @@ class WanTrainingModule(DiffusionTrainingModule):
         max_timestep_boundary=1.0,
         min_timestep_boundary=0.0,
     ):
+        logger.info(f"Initializing WanTrainingModule")
         super().__init__()
         # Warning
         if not use_gradient_checkpointing:
@@ -31,19 +102,32 @@ class WanTrainingModule(DiffusionTrainingModule):
             use_gradient_checkpointing = True
         
         # Load models
+        logger.info(f"Start loading models")
+        logger.info(f"Start parsing model configs from {model_paths = } , {model_id_with_origin_paths = }")
         model_configs = self.parse_model_configs(model_paths, model_id_with_origin_paths, fp8_models=fp8_models, offload_models=offload_models, device=device)
+        logger.info(f"Finished parsing model configs. {model_configs = }")
+        logger.info(f"Start loading tokenizer config from {tokenizer_path = }")
         tokenizer_config = ModelConfig(model_id="Wan-AI/Wan2.1-T2V-1.3B", origin_file_pattern="google/umt5-xxl/") if tokenizer_path is None else ModelConfig(tokenizer_path)
+        logger.info(f"Finished loading tokenizer config. {tokenizer_config = }")
+        logger.info(f"Start loading audio processor config from {audio_processor_path = }")
         audio_processor_config = self.parse_path_or_model_id(audio_processor_path)
+        logger.info(f"Finished loading audio processor config. {audio_processor_config = }")
+        logger.info(f"Start initializing WanVideoPipeline")
         self.pipe = WanVideoPipeline.from_pretrained(torch_dtype=torch.bfloat16, device=device, model_configs=model_configs, tokenizer_config=tokenizer_config, audio_processor_config=audio_processor_config)
+        logger.info(f"Finished initializing WanVideoPipeline")
+        logger.info(f"Start splitting pipeline units and loading LoRA weights if needed")
         self.pipe = self.split_pipeline_units(task, self.pipe, trainable_models, lora_base_model)
+        logger.info(f"Finished splitting pipeline units and loading LoRA weights if needed")
         
         # Training mode
+        logger.info(f"Start switching pipeline to training mode with {task = }")
         self.switch_pipe_to_training_mode(
             self.pipe, trainable_models,
             lora_base_model, lora_target_modules, lora_rank, lora_checkpoint,
             preset_lora_path, preset_lora_model,
             task=task,
         )
+        logger.info(f"Finished switching pipeline to training mode")
         
         # Store other configs
         self.use_gradient_checkpointing = use_gradient_checkpointing
@@ -121,6 +205,12 @@ def wan_parser():
     parser.add_argument("--min_timestep_boundary", type=float, default=0.0, help="Min timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
     parser.add_argument("--initialize_model_on_cpu", default=False, action="store_true", help="Whether to initialize models on CPU.")
     parser.add_argument("--framewise_decoding", default=False, action="store_true", help="Enable it if this model is a WanToDance global model.")
+    parser.add_argument(
+        "--inference_interval_steps",
+        type=int,
+        default=0,
+        help="Run inference every N training steps. Disabled when set to 0.",
+    )
     return parser
 
 
@@ -131,6 +221,19 @@ if __name__ == "__main__":
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=args.find_unused_parameters)],
     )
+    logfile = None
+    if args.log_dir is not None:
+        log_dir = Path(args.log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        machine_index = machine_index_from_environment()
+        logfile = log_dir / f"train_machine{machine_index}_rank{accelerator.process_index}.log"
+    _configure_logging(logfile)
+    log_accelerator_debug(accelerator)
+    log_environment_versions()
+    logger.info(
+        f"Starting WanVideo training with {args.task = }, {args.output_path = }"
+    )
+    logger.info(f"Starting initialization of UnifiedDataset")
     dataset = UnifiedDataset(
         base_path=args.dataset_base_path,
         metadata_path=args.dataset_metadata_path,
@@ -153,6 +256,8 @@ if __name__ == "__main__":
             "wantodance_music_path": ToAbsolutePath(args.dataset_base_path),
         }
     )
+    logger.info(f"Finished initialization of UnifiedDataset. {len(dataset.data) = } data items initialized.")
+    logger.info(f"Start initialization of WanTrainingModule")
     model = WanTrainingModule(
         model_paths=args.model_paths,
         model_id_with_origin_paths=args.model_id_with_origin_paths,
@@ -175,6 +280,7 @@ if __name__ == "__main__":
         max_timestep_boundary=args.max_timestep_boundary,
         min_timestep_boundary=args.min_timestep_boundary,
     )
+    logger.info(f"Finished initialization of {model = }.")
     model_logger = ModelLogger(
         args.output_path,
         remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
@@ -187,4 +293,21 @@ if __name__ == "__main__":
         "direct_distill": launch_training_task,
         "direct_distill:train": launch_training_task,
     }
-    launcher_map[args.task](accelerator, dataset, model, model_logger, args=args)
+    launcher = launcher_map[args.task]
+    logger.info(f"{args.task = }")
+    logger.info(f"{launcher = }")
+    inference_dataset = build_inference_dataset_from_training_prompts(
+        dataset,
+        args,
+    )
+    logger.info(
+        f"Built inference dataset from first {len(inference_dataset)} training prompts."
+    )
+    launcher(
+        accelerator,
+        dataset,
+        model,
+        model_logger,
+        args=args,
+        inference_dataset=inference_dataset,
+    )

@@ -1,6 +1,15 @@
-modelscope download --dataset DiffSynth-Studio/diffsynth_example_dataset --include "wanvideo/Wan2.1-VACE-1.3B/*" --local_dir ./data/diffsynth_example_dataset
+# modelscope download --dataset DiffSynth-Studio/diffsynth_example_dataset --include "wanvideo/Wan2.1-VACE-1.3B/*" --local_dir ./data/diffsynth_example_dataset
 
-accelerate launch examples/wanvideo/model_training/train.py \
+export HF_HUB_OFFLINE=1
+export MODELSCOPE_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+accelerate launch  \
+  --num_processes 8 \
+  --num_machines 1 \
+  --mixed_precision bf16 \
+  --dynamo_backend no \
+  examples/wanvideo/model_training/train.py \
   --dataset_base_path data/diffsynth_example_dataset/wanvideo/Wan2.1-VACE-1.3B \
   --dataset_metadata_path data/diffsynth_example_dataset/wanvideo/Wan2.1-VACE-1.3B/metadata.csv \
   --data_file_keys "video,vace_video,vace_reference_image" \
@@ -8,7 +17,8 @@ accelerate launch examples/wanvideo/model_training/train.py \
   --width 832 \
   --num_frames 49 \
   --dataset_repeat 100 \
-  --model_id_with_origin_paths "Wan-AI/Wan2.1-VACE-1.3B:diffusion_pytorch_model*.safetensors,Wan-AI/Wan2.1-VACE-1.3B:models_t5_umt5-xxl-enc-bf16.pth,Wan-AI/Wan2.1-VACE-1.3B:Wan2.1_VAE.pth" \
+  --model_paths '["Wan-AI/Wan2.1-VACE-1.3B/diffusion_pytorch_model.safetensors","Wan-AI/Wan2.1-VACE-1.3B/models_t5_umt5-xxl-enc-bf16.pth","Wan-AI/Wan2.1-VACE-1.3B/Wan2.1_VAE.pth"]' \
+  --tokenizer_path Wan-AI/Wan2.1-VACE-1.3B/google/umt5-xxl \
   --learning_rate 5e-5 \
   --num_epochs 2 \
   --remove_prefix_in_ckpt "pipe.vace." \

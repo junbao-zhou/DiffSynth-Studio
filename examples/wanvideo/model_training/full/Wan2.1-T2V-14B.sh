@@ -1,12 +1,20 @@
-modelscope download --dataset DiffSynth-Studio/diffsynth_example_dataset --include "wanvideo/Wan2.1-T2V-14B/*" --local_dir ./data/diffsynth_example_dataset
+# modelscope download --dataset DiffSynth-Studio/diffsynth_example_dataset --include "wanvideo/Wan2.1-T2V-14B/*" --local_dir ./data/diffsynth_example_dataset
 
-accelerate launch --config_file examples/wanvideo/model_training/full/accelerate_config_14B.yaml examples/wanvideo/model_training/train.py \
+export HF_HUB_OFFLINE=1
+export MODELSCOPE_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+
+accelerate launch \
+  --config_file examples/wanvideo/model_training/full/accelerate_config_14B.yaml \
+  examples/wanvideo/model_training/train.py \
   --dataset_base_path data/diffsynth_example_dataset/wanvideo/Wan2.1-T2V-14B \
   --dataset_metadata_path data/diffsynth_example_dataset/wanvideo/Wan2.1-T2V-14B/metadata.csv \
   --height 480 \
   --width 832 \
   --dataset_repeat 100 \
-  --model_id_with_origin_paths "Wan-AI/Wan2.1-T2V-14B:diffusion_pytorch_model*.safetensors,Wan-AI/Wan2.1-T2V-14B:models_t5_umt5-xxl-enc-bf16.pth,Wan-AI/Wan2.1-T2V-14B:Wan2.1_VAE.pth" \
+  --model_paths '[["Wan-AI/Wan2.1-T2V-14B/diffusion_pytorch_model-00001-of-00006.safetensors","Wan-AI/Wan2.1-T2V-14B/diffusion_pytorch_model-00002-of-00006.safetensors","Wan-AI/Wan2.1-T2V-14B/diffusion_pytorch_model-00003-of-00006.safetensors","Wan-AI/Wan2.1-T2V-14B/diffusion_pytorch_model-00004-of-00006.safetensors","Wan-AI/Wan2.1-T2V-14B/diffusion_pytorch_model-00005-of-00006.safetensors","Wan-AI/Wan2.1-T2V-14B/diffusion_pytorch_model-00006-of-00006.safetensors"],"Wan-AI/Wan2.1-T2V-14B/models_t5_umt5-xxl-enc-bf16.pth","Wan-AI/Wan2.1-T2V-14B/Wan2.1_VAE.pth"]' \
+  --tokenizer_path Wan-AI/Wan2.1-T2V-14B/google/umt5-xxl \
   --learning_rate 1e-5 \
   --num_epochs 2 \
   --remove_prefix_in_ckpt "pipe.dit." \

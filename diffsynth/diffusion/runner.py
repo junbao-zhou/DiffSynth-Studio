@@ -1,8 +1,99 @@
+import copy
 import os, torch
+from pathlib import Path
+
 from tqdm import tqdm
 from accelerate import Accelerator
+from diffsynth.utils.data import save_video
+from diffsynth.utils.logger import logger
 from .training_module import DiffusionTrainingModule
 from .logger import ModelLogger
+
+
+def _copy_pipe_for_inference(pipe):
+    inference_pipe = copy.copy(pipe)
+    inference_pipe.scheduler = copy.deepcopy(pipe.scheduler)
+    return inference_pipe
+
+
+def inference(
+    model: DiffusionTrainingModule,
+    inference_dataset,
+) -> list[tuple[int, str, list]]:
+    was_training = model.training
+    inference_pipe = _copy_pipe_for_inference(model.pipe)
+    videos = []
+    model.eval()
+    for inference_id, inference_data in enumerate(inference_dataset):
+        if not isinstance(inference_data, dict):
+            raise TypeError(
+                "Each inference dataset item must be a dict passed to pipe.__call__."
+            )
+        inference_inputs = dict(inference_data)
+        logger.info(f"Start inference {inference_id = } / {len(inference_dataset)} | {inference_inputs = }")
+        videos.append(
+            (
+                inference_id,
+                inference_data["prompt"],
+                inference_pipe(**inference_inputs),
+            )
+        )
+    model.train(was_training)
+    return videos
+
+
+def inference_and_save(
+    model: DiffusionTrainingModule,
+    inference_dataset,
+    save_dir: Path | str,
+    fps: float = 15,
+    quality: int = 9,
+) -> None:
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Start inference and save videos to {save_dir}")
+    videos = inference(
+        model=model,
+        inference_dataset=inference_dataset,
+    )
+    for inference_id, prompt, video in videos:
+        save_path = save_dir / f"inference-{inference_id:06d}-{prompt[:50].replace(' ', '_')}.mp4"
+        save_video(video, str(save_path), fps=fps, quality=quality)
+        logger.info(f"Saved inference {inference_id = } video to {save_path}")
+    logger.info(f"Finished inference and save videos to {save_dir}")
+
+
+def run_on_main_process_after_everyone(
+    accelerator: Accelerator,
+    function,
+) -> None:
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        function()
+    accelerator.wait_for_everyone()
+
+
+def inference_and_save_on_main_process(
+    accelerator: Accelerator,
+    model: DiffusionTrainingModule,
+    inference_dataset,
+    save_dir: Path | str,
+    fps: float = 15,
+    quality: int = 9,
+) -> None:
+    def _inference_and_save() -> None:
+        inference_and_save(
+            model=accelerator.unwrap_model(model),
+            inference_dataset=inference_dataset,
+            save_dir=save_dir,
+            fps=fps,
+            quality=quality,
+        )
+
+    run_on_main_process_after_everyone(
+        accelerator=accelerator,
+        function=_inference_and_save,
+    )
 
 
 def launch_training_task(
@@ -16,6 +107,10 @@ def launch_training_task(
     save_steps: int = None,
     num_epochs: int = 1,
     args = None,
+    inference_interval_steps: int = 0,
+    inference_dataset: torch.utils.data.Dataset = None,
+    inference_fps: float = 15,
+    inference_quality: int = 9,
 ):
     if args is not None:
         learning_rate = args.learning_rate
@@ -23,15 +118,29 @@ def launch_training_task(
         num_workers = args.dataset_num_workers
         save_steps = args.save_steps
         num_epochs = args.num_epochs
-    
+        inference_interval_steps = args.inference_interval_steps
+
+    if inference_interval_steps > 0 and inference_dataset is None:
+        logger.info(
+            "Periodic inference is disabled because inference_dataset is not provided."
+        )
+
     optimizer = torch.optim.AdamW(model.trainable_modules(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers)
     model.to(device=accelerator.device)
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
+    logger.info(
+        f"Start training: {num_epochs = }, {len(dataloader) = }, "
+        f"{learning_rate = }, {weight_decay = }"
+    )
     initialize_deepspeed_gradient_checkpointing(accelerator)
     for epoch_id in range(num_epochs):
-        for data in tqdm(dataloader):
+        logger.info(f"Start epoch {epoch_id = } / {num_epochs}")
+        for data_id, data in enumerate(tqdm(dataloader)):
+            logger.info(
+                f"Start data {data_id = } / {len(dataloader)} | {list(data.keys()) = } | {data.get('prompt', '')[:100] = }"
+            )
             with accelerator.accumulate(model):
                 if dataset.load_from_cache:
                     loss = model({}, inputs=data)
@@ -42,9 +151,30 @@ def launch_training_task(
                 scheduler.step()
                 optimizer.zero_grad()
                 model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
+            training_step = model_logger.num_steps
+            if (
+                inference_interval_steps > 0
+                and inference_dataset is not None
+                and training_step % inference_interval_steps == 0
+            ):
+                inference_save_dir = (
+                    Path(model_logger.output_path)
+                    / "inference"
+                    / f"step-{training_step:06d}"
+                )
+                inference_and_save_on_main_process(
+                    accelerator=accelerator,
+                    model=model,
+                    inference_dataset=inference_dataset,
+                    save_dir=inference_save_dir,
+                    fps=inference_fps,
+                    quality=inference_quality,
+                )
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
+        logger.info(f"Finished epoch {epoch_id = } / {num_epochs}")
     model_logger.on_training_end(accelerator, model, save_steps)
+    logger.info("Finished training")
 
 
 def launch_data_process_task(
@@ -61,8 +191,11 @@ def launch_data_process_task(
     dataloader = torch.utils.data.DataLoader(dataset, shuffle=False, collate_fn=lambda x: x[0], num_workers=num_workers)
     model.to(device=accelerator.device)
     model, dataloader = accelerator.prepare(model, dataloader)
+    num_batches = len(dataloader)
+    logger.info(f"Start data process: num_batches={num_batches}")
     
     for data_id, data in enumerate(tqdm(dataloader)):
+        logger.info(f"Start data process item {data_id + 1}/{num_batches}")
         with accelerator.accumulate(model):
             with torch.no_grad():
                 folder = os.path.join(model_logger.output_path, str(accelerator.process_index))
