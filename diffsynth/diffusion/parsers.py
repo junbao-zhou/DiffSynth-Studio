@@ -64,6 +64,14 @@ def add_output_config(parser: argparse.ArgumentParser):
         default=None,
         help="Number of checkpoint saving invervals. If None, checkpoints will be saved every epoch.",
     )
+    parser.add_argument(
+        "--max_checkpoints",
+        type=int,
+        default=5,
+        help="Maximum number of checkpoints to keep.",
+    )
+    return parser
+
     return parser
 
 def add_lora_config(parser: argparse.ArgumentParser):
