@@ -20,3 +20,23 @@
 !*.gif
 
 !scripts/
+
+!diffsynth/
+!diffsynth/*/
+!diffsynth/*/*.py
+!diffsynth/*/*/
+!diffsynth/*/*/*.py
+!diffsynth/*/*/*/
+!diffsynth/*/*/*/*.py
+
+
+!examples/
+!examples/*/
+!examples/*/*.py
+!examples/*/*/
+!examples/*/*/*.py
+!examples/*/*/*/
+!examples/*/*/*/*.py
+
+
+!robotwin2.0/
