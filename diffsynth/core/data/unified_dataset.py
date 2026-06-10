@@ -14,6 +14,8 @@ class UnifiedDataset(torch.utils.data.Dataset):
         max_data_items=None,
     ):
         logger.info(f"Initializing UnifiedDataset")
+        if max_data_items is not None and max_data_items < 1:
+            raise ValueError(f"max_data_items must be >= 1, got: {max_data_items}")
         self.base_path = base_path
         self.metadata_path = metadata_path
         self.repeat = repeat
@@ -89,6 +91,9 @@ class UnifiedDataset(torch.utils.data.Dataset):
         else:
             metadata = pandas.read_csv(metadata_path)
             self.data = [metadata.iloc[i].to_dict() for i in range(len(metadata))]
+        if self.max_data_items is not None:
+            self.data = self.data[:self.max_data_items]
+            self.cached_data = self.cached_data[:self.max_data_items]
 
     def __getitem__(self, data_id):
         if self.load_from_cache:
@@ -105,9 +110,7 @@ class UnifiedDataset(torch.utils.data.Dataset):
         return data
 
     def __len__(self):
-        if self.max_data_items is not None:
-            return self.max_data_items
-        elif self.load_from_cache:
+        if self.load_from_cache:
             return len(self.cached_data) * self.repeat
         else:
             return len(self.data) * self.repeat
