@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch, os, argparse, accelerate, warnings
 from pathlib import Path
 
@@ -8,9 +10,6 @@ from diffsynth.diffusion import *
 from diffsynth.utils.logger import _configure_logging, logger, log_environment_versions
 from diffsynth.utils.misc import parse_non_negative_integer_from_environment
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-
-WAN_INFERENCE_NEGATIVE_PROMPT = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 
 
 def machine_index_from_environment() -> int:
@@ -27,33 +26,101 @@ def machine_index_from_environment() -> int:
     return 0
 
 
-def build_inference_dataset_from_training_prompts(
-    dataset: UnifiedDataset,
+def split_comma_separated_values(value: str | None) -> list[str]:
+    if value is None or value == "":
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def get_inference_height(args: argparse.Namespace) -> int | None:
+    return args.inference_height if args.inference_height is not None else args.height
+
+
+def get_inference_width(args: argparse.Namespace) -> int | None:
+    return args.inference_width if args.inference_width is not None else args.width
+
+
+def get_inference_num_frames(args: argparse.Namespace) -> int:
+    return (
+        args.inference_num_frames
+        if args.inference_num_frames is not None
+        else args.num_frames
+    )
+
+
+def get_inference_max_pixels(args: argparse.Namespace) -> int:
+    return (
+        args.inference_max_pixels
+        if args.inference_max_pixels is not None
+        else args.max_pixels
+    )
+
+
+def build_wan_special_operator_map(
+    base_path: str,
+    num_frames: int,
+) -> dict[str, object]:
+    return {
+        "animate_face_video": ToAbsolutePath(base_path) >> LoadVideo(num_frames, 4, 1, frame_processor=ImageCropAndResize(512, 512, None, 16, 16)),
+        "input_audio": ToAbsolutePath(base_path) >> LoadAudio(sr=16000),
+        "wantodance_music_path": ToAbsolutePath(base_path),
+    }
+
+
+def build_inference_dataset_from_args(
     args: argparse.Namespace,
-    num_prompts: int = 3,
-) -> list[dict[str, object]]:
-    inference_dataset: list[dict[str, object]] = []
-    for data in dataset.data[:num_prompts]:
-        inference_dataset.append(
-            {
-                "prompt": data["prompt"],
-                "negative_prompt": WAN_INFERENCE_NEGATIVE_PROMPT,
-                "seed": 0,
-                "tiled": True,
-                "height": args.height,
-                "width": args.width,
-                "num_frames": args.num_frames,
-                "num_inference_steps": 50,
-            }
+) -> UnifiedDataset | None:
+    if args.inference_dataset_metadata_path is None:
+        logger.info(
+            "Inference dataset is not built because "
+            "inference_dataset_metadata_path is not provided."
         )
+        return None
+    if args.inference_num_samples < 1:
+        raise ValueError(
+            f"inference_num_samples must be >= 1, got: {args.inference_num_samples}"
+        )
+
+    inference_dataset_base_path = (
+        args.inference_dataset_base_path
+        if args.inference_dataset_base_path is not None
+        else args.dataset_base_path
+    )
+    inference_num_frames = get_inference_num_frames(args)
+    inference_dataset = UnifiedDataset(
+        base_path=inference_dataset_base_path,
+        metadata_path=args.inference_dataset_metadata_path,
+        repeat=1,
+        data_file_keys=split_comma_separated_values(args.inference_data_file_keys),
+        main_data_operator=UnifiedDataset.default_video_operator(
+            base_path=inference_dataset_base_path,
+            max_pixels=get_inference_max_pixels(args),
+            height=get_inference_height(args),
+            width=get_inference_width(args),
+            height_division_factor=16,
+            width_division_factor=16,
+            num_frames=inference_num_frames,
+            time_division_factor=4 if not args.framewise_decoding else 1,
+            time_division_remainder=1 if not args.framewise_decoding else 0,
+        ),
+        special_operator_map=build_wan_special_operator_map(
+            inference_dataset_base_path,
+            inference_num_frames,
+        ),
+        max_data_items=args.inference_num_samples,
+    )
+    logger.info(
+        f"Built inference dataset from {args.inference_dataset_metadata_path}. "
+        f"{len(inference_dataset)} data items initialized."
+    )
     return inference_dataset
 
 
-def log_accelerator_debug(
+def log_accelerator_state(
     accelerator: accelerate.Accelerator,
 ) -> None:
     logger.info(
-        f"""Accelerator debug: 
+        f"""Accelerator state: 
     {accelerator.process_index = }
     {accelerator.local_process_index = }
     {accelerator.num_processes = }
@@ -199,6 +266,7 @@ def wan_parser():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser = add_general_config(parser)
     parser = add_video_size_config(parser)
+    parser = add_inference_config(parser)
     parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to tokenizer.")
     parser.add_argument("--audio_processor_path", type=str, default=None, help="Path to the audio processor. If provided, the processor will be used for Wan2.2-S2V model.")
     parser.add_argument("--max_timestep_boundary", type=float, default=1.0, help="Max timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
@@ -228,8 +296,11 @@ if __name__ == "__main__":
         machine_index = machine_index_from_environment()
         logfile = log_dir / f"train_machine{machine_index}_rank{accelerator.process_index}.log"
     _configure_logging(logfile)
-    log_accelerator_debug(accelerator)
+    log_accelerator_state(accelerator)
     log_environment_versions()
+    logger.info("args:")
+    for name, value in vars(args).items():
+        logger.info(f"  {name} = {value!r}")
     logger.info(
         f"Starting WanVideo training with {args.task = }, {args.output_path = }"
     )
@@ -250,11 +321,10 @@ if __name__ == "__main__":
             time_division_factor=4 if not args.framewise_decoding else 1,
             time_division_remainder=1 if not args.framewise_decoding else 0,
         ),
-        special_operator_map={
-            "animate_face_video": ToAbsolutePath(args.dataset_base_path) >> LoadVideo(args.num_frames, 4, 1, frame_processor=ImageCropAndResize(512, 512, None, 16, 16)),
-            "input_audio": ToAbsolutePath(args.dataset_base_path) >> LoadAudio(sr=16000),
-            "wantodance_music_path": ToAbsolutePath(args.dataset_base_path),
-        }
+        special_operator_map=build_wan_special_operator_map(
+            args.dataset_base_path,
+            args.num_frames,
+        ),
     )
     logger.info(f"Finished initialization of UnifiedDataset. {len(dataset.data) = } data items initialized.")
     logger.info(f"Start initialization of WanTrainingModule")
@@ -284,6 +354,7 @@ if __name__ == "__main__":
     model_logger = ModelLogger(
         args.output_path,
         remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
+        max_checkpoints=args.max_checkpoints,
     )
     launcher_map = {
         "sft:data_process": launch_data_process_task,
@@ -296,13 +367,7 @@ if __name__ == "__main__":
     launcher = launcher_map[args.task]
     logger.info(f"{args.task = }")
     logger.info(f"{launcher = }")
-    inference_dataset = build_inference_dataset_from_training_prompts(
-        dataset,
-        args,
-    )
-    logger.info(
-        f"Built inference dataset from first {len(inference_dataset)} training prompts."
-    )
+    inference_dataset = build_inference_dataset_from_args(args)
     launcher(
         accelerator,
         dataset,

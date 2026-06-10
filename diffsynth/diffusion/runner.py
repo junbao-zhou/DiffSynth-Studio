@@ -16,25 +16,90 @@ def _copy_pipe_for_inference(pipe):
     return inference_pipe
 
 
+def summarize_data_value(value):
+    if isinstance(value, torch.Tensor):
+        return {
+            "type": "Tensor",
+            "shape": list(value.shape),
+            "dtype": str(value.dtype),
+            "device": str(value.device),
+        }
+    if value.__class__.__name__ == "Image" and hasattr(value, "size"):
+        width, height = value.size
+        return {
+            "type": "Image",
+            "shape": (height, width),
+        }
+    if isinstance(value, list):
+        summary = {
+            "type": "list",
+            "length": len(value),
+        }
+        if value and value[0].__class__.__name__ == "Image" and hasattr(value[0], "size"):
+            width, height = value[0].size
+            summary["type"] = "video"
+            summary["shape"] = (len(value), height, width)
+        return summary
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return {
+        "type": type(value).__name__,
+    }
+
+
+def summarize_data_mapping(data):
+    return {
+        name: summarize_data_value(value)
+        for name, value in data.items()
+    }
+
+
+def build_inference_pipe_kwargs(args):
+    if args is None:
+        return {}
+
+    inference_pipe_kwargs = {
+        "height": args.inference_height if args.inference_height is not None else args.height,
+        "width": args.inference_width if args.inference_width is not None else args.width,
+        "num_frames": args.inference_num_frames if args.inference_num_frames is not None else args.num_frames,
+        "seed": args.inference_seed,
+        "num_inference_steps": args.inference_num_inference_steps,
+        "tiled": args.inference_tiled,
+        "framewise_decoding": args.framewise_decoding,
+    }
+    if args.inference_negative_prompt is not None:
+        inference_pipe_kwargs["negative_prompt"] = args.inference_negative_prompt
+    return inference_pipe_kwargs
+
+
 def inference(
     model: DiffusionTrainingModule,
     inference_dataset,
+    args=None,
 ) -> list[tuple[int, str, list]]:
     was_training = model.training
     inference_pipe = _copy_pipe_for_inference(model.pipe)
+    inference_pipe_kwargs = build_inference_pipe_kwargs(args)
     videos = []
     model.eval()
-    for inference_id, inference_data in enumerate(inference_dataset):
+    for inference_id in range(len(inference_dataset)):
+        inference_data = inference_dataset[inference_id]
         if not isinstance(inference_data, dict):
             raise TypeError(
                 "Each inference dataset item must be a dict passed to pipe.__call__."
             )
         inference_inputs = dict(inference_data)
-        logger.info(f"Start inference {inference_id = } / {len(inference_dataset)} | {inference_inputs = }")
+        inference_inputs.pop("video", None)
+        inference_inputs.update(inference_pipe_kwargs)
+        logger.info(
+            f"Start inference {inference_id = } / {len(inference_dataset)} | "
+            f"input_keys={list(inference_inputs.keys())} | "
+            f"input_summary={summarize_data_mapping(inference_inputs)}"
+        )
         videos.append(
             (
                 inference_id,
-                inference_data["prompt"],
+                inference_data.get("prompt", ""),
                 inference_pipe(**inference_inputs),
             )
         )
@@ -48,6 +113,7 @@ def inference_and_save(
     save_dir: Path | str,
     fps: float = 15,
     quality: int = 9,
+    args=None,
 ) -> None:
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -55,6 +121,7 @@ def inference_and_save(
     videos = inference(
         model=model,
         inference_dataset=inference_dataset,
+        args=args,
     )
     for inference_id, prompt, video in videos:
         save_path = save_dir / f"inference-{inference_id:06d}-{prompt[:50].replace(' ', '_')}.mp4"
@@ -80,6 +147,7 @@ def inference_and_save_on_main_process(
     save_dir: Path | str,
     fps: float = 15,
     quality: int = 9,
+    args=None,
 ) -> None:
     def _inference_and_save() -> None:
         inference_and_save(
@@ -88,6 +156,7 @@ def inference_and_save_on_main_process(
             save_dir=save_dir,
             fps=fps,
             quality=quality,
+            args=args,
         )
 
     run_on_main_process_after_everyone(
@@ -139,7 +208,10 @@ def launch_training_task(
         logger.info(f"Start epoch {epoch_id = } / {num_epochs}")
         for data_id, data in enumerate(tqdm(dataloader)):
             logger.info(
-                f"Start data {data_id = } / {len(dataloader)} | {list(data.keys()) = } | {data.get('prompt', '')[:100] = }"
+                f"Start data {data_id = } / {len(dataloader)} | "
+                f"{list(data.keys()) = } | "
+                f"{data.get('prompt', '')[:100] = } | "
+                f"data_summary={summarize_data_mapping(data)}"
             )
             with accelerator.accumulate(model):
                 if dataset.load_from_cache:
@@ -169,6 +241,7 @@ def launch_training_task(
                     save_dir=inference_save_dir,
                     fps=inference_fps,
                     quality=inference_quality,
+                    args=args,
                 )
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)

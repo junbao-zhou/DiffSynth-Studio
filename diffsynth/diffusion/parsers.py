@@ -72,6 +72,86 @@ def add_output_config(parser: argparse.ArgumentParser):
     )
     return parser
 
+def add_inference_config(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--inference_dataset_base_path",
+        type=str,
+        default=None,
+        help="Base path of the inference dataset. If empty, dataset_base_path will be used.",
+    )
+    parser.add_argument(
+        "--inference_dataset_metadata_path",
+        type=str,
+        default=None,
+        help="Path to the metadata file of the inference dataset. Periodic inference is disabled if empty.",
+    )
+    parser.add_argument(
+        "--inference_data_file_keys",
+        type=str,
+        default="",
+        help="Inference data file keys in the metadata. Comma-separated.",
+    )
+    parser.add_argument(
+        "--inference_num_samples",
+        type=int,
+        default=3,
+        help="Number of inference samples to run.",
+    )
+    parser.add_argument(
+        "--inference_height",
+        type=int,
+        default=None,
+        help="Inference video height. If empty, height will be used.",
+    )
+    parser.add_argument(
+        "--inference_width",
+        type=int,
+        default=None,
+        help="Inference video width. If empty, width will be used.",
+    )
+    parser.add_argument(
+        "--inference_num_frames",
+        type=int,
+        default=None,
+        help="Number of inference video frames. If empty, num_frames will be used.",
+    )
+    parser.add_argument(
+        "--inference_max_pixels",
+        type=int,
+        default=None,
+        help="Maximum pixels per inference frame. If empty, max_pixels will be used.",
+    )
+    parser.add_argument(
+        "--inference_negative_prompt",
+        type=str,
+        default=None,
+        help="Negative prompt used for periodic inference.",
+    )
+    parser.add_argument(
+        "--inference_seed",
+        type=int,
+        default=0,
+        help="Seed used for periodic inference.",
+    )
+    parser.add_argument(
+        "--inference_num_inference_steps",
+        type=int,
+        default=50,
+        help="Number of denoising steps used for periodic inference.",
+    )
+    parser.add_argument(
+        "--inference_tiled",
+        dest="inference_tiled",
+        default=True,
+        action="store_true",
+        help="Enable VAE tiling during periodic inference.",
+    )
+    parser.add_argument(
+        "--no_inference_tiled",
+        dest="inference_tiled",
+        action="store_false",
+        help="Disable VAE tiling during periodic inference.",
+    )
     return parser
 
 def add_lora_config(parser: argparse.ArgumentParser):
