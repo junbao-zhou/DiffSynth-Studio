@@ -27,6 +27,7 @@ from ..models.wan_video_animate_adapter import WanAnimateAdapter
 from ..models.wan_video_mot import MotWanModel
 from ..models.wav2vec import WanS2VAudioEncoder
 from ..models.longcat_video_dit import LongCatVideoTransformer3DModel
+from ..utils.logger import logger
 
 
 class WanVideoPipeline(BasePipeline):
@@ -267,6 +268,19 @@ class WanVideoPipeline(BasePipeline):
         progress_bar_cmd=tqdm,
         output_type: Literal["quantized", "floatpoint"] = "quantized",
     ):
+        logger.info(
+            "WanVideoPipeline.__call__: "
+            f"height={height}, width={width}, num_frames={num_frames}, "
+            f"input_video_len={len(input_video) if input_video is not None else None}, "
+            f"input_video_first_size={getattr(input_video[0], 'size', None) if input_video else None}, "
+            f"vace_video_len={len(vace_video) if vace_video is not None else None}, "
+            f"vace_video_first_size={getattr(vace_video[0], 'size', None) if vace_video else None}, "
+            f"vace_reference_image_type={type(vace_reference_image).__name__ if vace_reference_image is not None else None}, "
+            f"vace_reference_image_len={len(vace_reference_image) if isinstance(vace_reference_image, list) else None}, "
+            f"vace_reference_image_first_size={getattr(vace_reference_image[0], 'size', None) if isinstance(vace_reference_image, list) and vace_reference_image else None}, "
+            f"seed={seed}, cfg_scale={cfg_scale}, num_inference_steps={num_inference_steps}, "
+            f"tiled={tiled}"
+        )
         # Scheduler
         self.scheduler.set_timesteps(num_inference_steps, denoising_strength=denoising_strength, shift=sigma_shift)
         
