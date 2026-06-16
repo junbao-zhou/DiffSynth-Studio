@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
@@ -15,7 +13,7 @@ DEFAULT_DATASET_BASE_PATH = Path("/workspace/group_share/adc-perception-xbrain/z
 DEFAULT_DATASET_METADATA_PATH = (
     DEFAULT_DATASET_BASE_PATH
     # / "robotwin2.0_action_traj_videos/diffsynth_videogen/vace_metadata_20.csv"
-    / "robotwin2.0_action_traj_videos/diffsynth_videogen/vace_metadata_all_prompts.csv"
+    / "robotwin2.0_action_traj_videos/diffsynth_videogen/vace_metadata.csv"
 )
 VACE_MODEL_NAMES = (
     "Wan2.1-VACE-1.3B",

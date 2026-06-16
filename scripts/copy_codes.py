@@ -20,7 +20,6 @@ Examples:
     python copy_codes.py --dest /tmp/whatever --dry-run
 """
 
-from __future__ import annotations
 import os
 import shutil
 import sys
