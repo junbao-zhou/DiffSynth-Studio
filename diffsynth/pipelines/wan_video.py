@@ -269,7 +269,7 @@ class WanVideoPipeline(BasePipeline):
         output_type: Literal["quantized", "floatpoint"] = "quantized",
     ):
         logger.info(
-            "WanVideoPipeline.__call__: "
+            f"{prompt=}, {negative_prompt=}, "
             f"height={height}, width={width}, num_frames={num_frames}, "
             f"input_video_len={len(input_video) if input_video is not None else None}, "
             f"input_video_first_size={getattr(input_video[0], 'size', None) if input_video else None}, "

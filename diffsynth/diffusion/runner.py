@@ -1,5 +1,6 @@
 import copy
 import os, torch
+from collections.abc import Iterator
 from pathlib import Path
 
 from tqdm import tqdm
@@ -75,14 +76,17 @@ def build_inference_pipe_kwargs(args):
 def inference(
     model: DiffusionTrainingModule,
     inference_dataset,
+    inference_indices: list[int] | None = None,
     args=None,
-) -> list[tuple[int, str, list]]:
+) -> Iterator[tuple[int, str, object]]:
+    if inference_indices is None:
+        return
+
     was_training = model.training
     inference_pipe = _copy_pipe_for_inference(model.pipe)
     inference_pipe_kwargs = build_inference_pipe_kwargs(args)
-    videos = []
     model.eval()
-    for inference_id in range(len(inference_dataset)):
+    for inference_id in inference_indices:
         inference_data = inference_dataset[inference_id]
         if not isinstance(inference_data, dict):
             raise TypeError(
@@ -96,48 +100,85 @@ def inference(
             f"input_keys={list(inference_inputs.keys())} | "
             f"input_summary={summarize_data_mapping(inference_inputs)}"
         )
-        videos.append(
-            (
-                inference_id,
-                inference_data.get("prompt", ""),
-                inference_pipe(**inference_inputs),
-            )
+        prompt = inference_data.get("prompt", "")
+        video = inference_pipe(**inference_inputs)
+        del inference_data, inference_inputs
+        yield (
+            inference_id,
+            prompt,
+            video,
         )
+        del prompt, video
     model.train(was_training)
-    return videos
+
+
+def save_inference_video(
+    video,
+    save_dir: Path,
+    inference_id: int,
+    prompt: str,
+    fps: float,
+    quality: int,
+) -> None:
+    prompt_filename_part = prompt[:50].replace(" ", "_")
+    save_path = save_dir / f"inference-{inference_id:06d}-{prompt_filename_part}.mp4"
+    save_video(video, str(save_path), fps=fps, quality=quality)
+    logger.info(f"Saved inference {inference_id = } video to {save_path}")
 
 
 def inference_and_save(
     model: DiffusionTrainingModule,
     inference_dataset,
     save_dir: Path | str,
+    inference_indices: list[int] | None = None,
     fps: float = 15,
     quality: int = 9,
     args=None,
 ) -> None:
+    if inference_indices is None or not inference_indices:
+        logger.info("No inference data assigned for this process.")
+        return
+
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Start inference and save videos to {save_dir}")
-    videos = inference(
+    logger.info(
+        f"Start inference and save videos to {save_dir} | "
+        f"{inference_indices = }"
+    )
+    inference_results = inference(
         model=model,
         inference_dataset=inference_dataset,
+        inference_indices=inference_indices,
         args=args,
     )
-    for inference_id, prompt, video in videos:
-        save_path = save_dir / f"inference-{inference_id:06d}-{prompt[:50].replace(' ', '_')}.mp4"
-        save_video(video, str(save_path), fps=fps, quality=quality)
-        logger.info(f"Saved inference {inference_id = } video to {save_path}")
+    for inference_id, prompt, video in inference_results:
+        save_inference_video(
+            video=video,
+            save_dir=save_dir,
+            inference_id=inference_id,
+            prompt=prompt,
+            fps=fps,
+            quality=quality,
+        )
+        del prompt, video
     logger.info(f"Finished inference and save videos to {save_dir}")
 
 
-def run_on_main_process_after_everyone(
-    accelerator: Accelerator,
-    function,
-) -> None:
-    accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        function()
-    accelerator.wait_for_everyone()
+def get_inference_indices_for_process(
+    dataset_length: int,
+    process_index: int,
+    num_processes: int,
+) -> list[int]:
+    return list(range(process_index, dataset_length, num_processes))
+
+
+def get_inference_indices_for_main_process(
+    dataset_length: int,
+    is_main_process: bool,
+) -> list[int]:
+    if is_main_process:
+        return list(range(dataset_length))
+    return []
 
 
 def inference_and_save_on_main_process(
@@ -149,20 +190,48 @@ def inference_and_save_on_main_process(
     quality: int = 9,
     args=None,
 ) -> None:
-    def _inference_and_save() -> None:
-        inference_and_save(
-            model=accelerator.unwrap_model(model),
-            inference_dataset=inference_dataset,
-            save_dir=save_dir,
-            fps=fps,
-            quality=quality,
-            args=args,
-        )
-
-    run_on_main_process_after_everyone(
-        accelerator=accelerator,
-        function=_inference_and_save,
+    accelerator.wait_for_everyone()
+    inference_indices = get_inference_indices_for_main_process(
+        dataset_length=len(inference_dataset),
+        is_main_process=accelerator.is_main_process,
     )
+    inference_and_save(
+        model=accelerator.unwrap_model(model),
+        inference_dataset=inference_dataset,
+        save_dir=save_dir,
+        inference_indices=inference_indices,
+        fps=fps,
+        quality=quality,
+        args=args,
+    )
+    accelerator.wait_for_everyone()
+
+
+def inference_and_save_on_all_processes(
+    accelerator: Accelerator,
+    model: DiffusionTrainingModule,
+    inference_dataset,
+    save_dir: Path | str,
+    fps: float = 15,
+    quality: int = 9,
+    args=None,
+) -> None:
+    accelerator.wait_for_everyone()
+    inference_indices = get_inference_indices_for_process(
+        dataset_length=len(inference_dataset),
+        process_index=accelerator.process_index,
+        num_processes=accelerator.num_processes,
+    )
+    inference_and_save(
+        model=accelerator.unwrap_model(model),
+        inference_dataset=inference_dataset,
+        save_dir=save_dir,
+        inference_indices=inference_indices,
+        fps=fps,
+        quality=quality,
+        args=args,
+    )
+    accelerator.wait_for_everyone()
 
 
 def launch_training_task(
@@ -234,7 +303,7 @@ def launch_training_task(
                     / "inference"
                     / f"step-{training_step:06d}"
                 )
-                inference_and_save_on_main_process(
+                inference_and_save_on_all_processes(
                     accelerator=accelerator,
                     model=model,
                     inference_dataset=inference_dataset,

@@ -1,6 +1,26 @@
 from .operators import *
-import torch, json, pandas
+import json
+import os
+
+import pandas
+import torch
 from diffsynth.utils.logger import logger
+
+
+class LoadPromptFile(DataProcessingOperator):
+    def __init__(self, base_path=""):
+        self.base_path = base_path
+
+    def __call__(self, data: str) -> str:
+        prompt_file_path = os.path.expanduser(data)
+        if not os.path.isabs(prompt_file_path):
+            prompt_file_path = os.path.join(self.base_path, prompt_file_path)
+
+        with open(prompt_file_path, "r", encoding="utf-8") as prompt_file:
+            prompt_data = json.load(prompt_file)
+        if "instruction" not in prompt_data:
+            raise ValueError(f"Prompt file must contain `instruction`: {prompt_file_path}")
+        return str(prompt_data["instruction"]).strip()
 
 
 class UnifiedDataset(torch.utils.data.Dataset):
@@ -103,7 +123,9 @@ class UnifiedDataset(torch.utils.data.Dataset):
             data = self.data[data_id % len(self.data)].copy()
             for key in self.data_file_keys:
                 if key in data:
-                    if key in self.special_operator_map:
+                    if key == "prompt_file" and key in self.special_operator_map:
+                        data["prompt"] = self.special_operator_map[key](data[key])
+                    elif key in self.special_operator_map:
                         data[key] = self.special_operator_map[key](data[key])
                     elif key in self.data_file_keys:
                         data[key] = self.main_data_operator(data[key])
